@@ -1,0 +1,726 @@
+---
+title: "Bulk RNA-Seq analysis"
+author: "Michele Rossi | Sabrina Sartori"
+date: "16/06/2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = T,message = T)
+```
+
+```{r}
+library(recount3)
+library(limma)
+library(edgeR)
+library(dplyr)
+```
+
+```{r}
+canonical <- paste("chr", seq(1,22), sep="")
+canonical <- c(canonical, "chrX", "chrY")
+```
+### DATA IMPORT
+
+I choose a variable called <i>rse_brain</i> to store the <i>RDS</i> file containing all the conts and various additional information associated to each gene. 
+
+```{r}
+rse_brain <- recount3::create_rse_manual(project = "BRAIN", 
+                            project_home= "data_sources/gtex", 
+                            organism = "human", 
+                            annotation = "refseq", 
+                            type = "gene")
+
+rse_liver <- recount3::create_rse_manual(
+                            project = "LIVER",
+                            project_home = "data_sources/gtex",
+                            organism = "human",
+                            annotation = "refseq",
+                            type = "gene")
+
+rse_lung <- recount3::create_rse_manual(
+                            project = "LUNG",
+                            project_home = "data_sources/gtex",
+                            organism = "human",
+                            annotation = "refseq",
+                            type = "gene"
+)
+
+```
+
+#justgoblinthings 
+```{r}
+rse_brain_filtered <- rse_brain[
+# Ribosomal RNA
+rowData(rse_brain)$gbkey != 'rRNA' &
+# Pseudogenes
+rowData(rse_brain)$gbkey != 'Gene' &
+# Exclude Non-canonical Chromosomes and Mitochondrial DNA
+rowRanges(rse_brain)@seqnames %in% canonical &
+# NAs
+!is.na(rowData(rse_brain)$gbkey),
+]
+
+rse_liver_filtered <- rse_liver[
+# Ribosomal RNA
+rowData(rse_liver)$gbkey != 'rRNA' &
+# Pseudogenes
+rowData(rse_liver)$gbkey != 'Gene' &
+# Exclude Non-canonical Chromosomes and Mitochondrial DNA
+rowRanges(rse_liver)@seqnames %in% canonical &
+# NAs
+!is.na(rowData(rse_liver)$gbkey),
+]
+
+rse_lung_filtered <- rse_lung[
+# Ribosomal RNA
+rowData(rse_lung)$gbkey != 'rRNA' &
+# Pseudogenes
+rowData(rse_lung)$gbkey != 'Gene' &
+# Exclude Non-canonical Chromosomes and Mitochondrial DNA
+rowRanges(rse_lung)@seqnames %in% canonical &
+# NAs
+!is.na(rowData(rse_lung)$gbkey),
+]
+
+```
+
+The column <i>raw_counts</i> the counts are in a "coverage format", which is how many times each best share of the gene was found inside a sequencing region and the overall coverage  of a gene is the sum for the single best shares of the gene. 
+Normally in quantification counts are the number of reads that are associated in an unique qay with a gene. It's the number of reads overlapping each gene. 
+We set the actual count tables and transform the raw counts in total base-pair coverage for the given sample by using the area under the coverage (AUC).
+
+```{r}
+
+assays(rse_brain)$counts <- transform_counts(rse_brain)
+assays(rse_brain_filtered)$counts <- transform_counts(rse_brain_filtered)
+
+assays(rse_liver)$counts <- transform_counts(rse_liver)
+assays(rse_liver_filtered)$counts <- transform_counts(rse_liver_filtered)
+
+assays(rse_lung)$counts <- transform_counts(rse_lung)
+assays(rse_lung_filtered)$counts <- transform_counts(rse_lung_filtered)
+```
+Now we have two elements in the assays: raw_counts and counts.
+
+
+Three replicates are selected. 
+
+Quality check: 
+
+RIN - RNA Integrity Number -  useful f
+(: 6 or higher) RIN
+```{r}
+
+RIN_Brain = (colData(rse_brain)$gtex.smrin)
+RIN_Liver=(colData(rse_liver)$gtex.smrin)
+RIN_Lung = (colData(rse_lung)$gtex.smrin)
+
+#we add NAs at the end of Liver and Lung to match the length of Brain
+length(RIN_Liver) <- length(RIN_Brain)
+length(RIN_Lung) <- length(RIN_Brain)
+
+data_graph <-data.frame(Brain = RIN_Brain,Liver = RIN_Liver,Lung = RIN_Lung)
+library(ggplot2)
+
+ggplot(stack(data_graph), aes(x = ind, y = values)) +
+  geom_boxplot(
+      width=0.6 ,
+      # custom boxes
+      color="#347988",
+      fill="#77ea93",
+      alpha=0.2,
+      
+      # Notch?
+      notch=TRUE,
+      notchwidth = 0.2,       
+      # custom outliers
+      outlier.colour="#fb8c00",
+      outlier.fill="#fb8c00",
+      outlier.size=3 , na.rm=TRUE) +
+      labs(title= "",
+      y= "RIN Score" ,x ="") + theme_minimal()
+```
+
+From which part of the tissue do  samples come from? 
+```{r}
+brain_tissue <- as.data.frame(table(colData(rse_brain)$gtex.smtsd))
+
+par(mar = c(3, 15, 3, 3 ))
+barplot(height=as.vector(brain_tissue$Freq), names=sapply(strsplit(as.character(brain_tissue$Var1)," - "), `[`, 2), col="#77ea93", horiz=T , las=1) 
+
+```
+Such differentiation is not present in the liver and lung samples. 
+
+```{r}
+table(colData(rse_brain)$gtex.smtsd)
+
+colData(rse_brain)$gtex.smrin[81]
+colData(rse_brain)$gtex.smrin[91]
+colData(rse_brain)$gtex.smrin[92]
+
+
+# estimated fraction of rRNA
+boxplot(colData(rse_brain)$gtex.smrrnart)
+
+colData(rse_brain)$gtex.smrrnart[81]
+colData(rse_brain)$gtex.smrrnart[91]
+colData(rse_brain)$gtex.smrrnart[92]
+
+
+# percentage of mapped reads > 85
+boxplot(colData(rse_brain)$"recount_qc.star.uniquely_mapped_reads_%_both")
+
+
+colData(rse_brain)$"recount_qc.star.uniquely_mapped_reads_%_both"[81]
+colData(rse_brain)$"recount_qc.star.uniquely_mapped_reads_%_both"[91]
+colData(rse_brain)$"recount_qc.star.uniquely_mapped_reads_%_both"[92]
+```
+
+
+I select the samples and extract the count table 
+```{r}
+##Brain
+#sample selection
+rse_brain_selected <- rse_brain[,c(81,91,92)]
+rse_brain_filtered_selected <- rse_brain_filtered[,c(81,91,92)]
+#count table extraction
+counts_brain_selected <- assays(rse_brain_selected)$counts
+counts_brain_filtered_selected <- assays(rse_brain_filtered_selected)$counts
+
+##Lung
+#sample selection
+rse_lung_selected <- rse_lung[,c(6,7,9)]
+rse_lung_filtered_selected <- rse_lung_filtered[,c(6,7,9)]
+#count table extraction
+counts_lung_selected <- assays(rse_lung_selected)$counts
+counts_lung_filtered_selected <- assays(rse_lung_filtered_selected)$counts
+
+##Liver
+#sample selection
+rse_lung_selected <- rse_lung[,c(6,7,9)]
+rse_lung_filtered_selected <- rse_lung_filtered[,c(6,7,9)]
+#count table extraction
+counts_lung_selected <- assays(rse_lung_selected)$counts
+counts_lung_filtered_selected <- assays(rse_lung_filtered_selected)$counts
+
+
+# library size
+colSums(counts_brain_selected)
+
+rownames(counts_brain_selected) <- rowData(rse_brain)$gene_name
+rownames(counts_brain_filtered_selected) <- rowData(rse_brain_filtered)$gene_name
+
+```
+### TISSUE 2 - LIVER
+```{r echo=FALSE}
+
+
+
+
+
+
+colData(rse_liver)$gtex.smrin[82]
+colData(rse_liver)$gtex.smrin[87]
+colData(rse_liver)$gtex.smrin[91]
+
+# estimated fraction of rRNA
+colData(rse_liver)$gtex.smrrnart[82]
+colData(rse_liver)$gtex.smrrnart[87]
+colData(rse_liver)$gtex.smrrnart[91]
+
+colData(rse_liver)$"recount_qc.star.uniquely_mapped_reads_%_both"[82]
+colData(rse_liver)$"recount_qc.star.uniquely_mapped_reads_%_both"[87]
+colData(rse_liver)$"recount_qc.star.uniquely_mapped_reads_%_both"[91]
+
+rse_liver_selected <- rse_liver[,c(82,87,91)]
+rse_liver_filtered_selected <- rse_liver_filtered[,c(82,87,91)]
+
+counts_liver_selected <- assays(rse_liver_selected)$counts
+counts_liver_filtered_selected <- assays(rse_liver_filtered_selected)$counts
+
+colSums(counts_liver_selected)
+
+rownames(counts_liver_selected) <- rowData(rse_liver)$gene_name
+rownames(counts_liver_filtered_selected) <- rowData(rse_liver_filtered)$gene_name
+```
+
+### TISSUE 3 - LUNG
+```{r}
+
+colData(rse_lung)$gtex.smrin[6]
+colData(rse_lung)$gtex.smrin[7]
+colData(rse_lung)$gtex.smrin[9]
+
+# estimated fraction of rRNA
+colData(rse_lung)$gtex.smrrnart[6]
+colData(rse_lung)$gtex.smrrnart[7]
+colData(rse_lung)$gtex.smrrnart[9]
+
+colData(rse_lung)$"recount_qc.star.uniquely_mapped_reads_%_both"[6]
+colData(rse_lung)$"recount_qc.star.uniquely_mapped_reads_%_both"[7]
+colData(rse_lung)$"recount_qc.star.uniquely_mapped_reads_%_both"[9]
+
+
+
+
+colSums(counts_lung_selected)
+
+rownames(counts_lung_selected) <- rowData(rse_lung)$gene_name
+rownames(counts_lung_filtered_selected) <- rowData(rse_lung_filtered)$gene_name
+
+```
+
+### DIFFERENTIAL EXPRESSION ANALYSIS
+
+A count table can be built
+```{r}
+
+counts_brain_liver_lung <- cbind(counts_brain_selected,counts_liver_selected,counts_lung_selected)
+
+counts_brain_liver_lung_filtered <- cbind(counts_brain_filtered_selected,counts_liver_filtered_selected,counts_lung_filtered_selected)
+
+colnames(counts_brain_liver_lung)<- c("Brain81","Brain91","Brain92","Liver82","Liver87","Liver91","Lung6","Lung7","Lung9")
+
+colnames(counts_brain_liver_lung_filtered)<- c("Brain81","Brain91","Brain92","Liver82","Liver87","Liver91","Lung6","Lung7","Lung9")
+```
+
+we can check the size: 
+```{r}
+size <- colSums(counts_brain_liver_lung)
+size
+
+size <- colSums(counts_brain_liver_lung_filtered)
+size
+```
+
+We create an EdgeR object 
+```{r}
+y <- DGEList(counts=counts_brain_liver_lung)
+y
+
+y_filtered <- DGEList(counts=counts_brain_liver_lung_filtered)
+y_filtered
+```
+
+I define the groups grouping into replicates. 
+```{r}
+group <- as.factor(c(rep("Brain",3),rep("Liver",3),rep("Lung",3)))
+y$samples$group <- group
+y_filtered$samples$group <- group
+
+y
+y_filtered
+```
+
+I add to the EdgeR object structure all the information needed 
+```{r}
+#RIN (RNA Integrity Number) 
+y$samples$rin <- as.factor(c(colData(rse_brain_selected)$gtex.smrin,colData(rse_liver_selected)$gtex.smrin,colData(rse_lung_selected)$gtex.smrin))
+y_filtered$samples$rin <- as.factor(c(colData(rse_brain_filtered_selected)$gtex.smrin,colData(rse_liver_filtered_selected)$gtex.smrin,colData(rse_lung_filtered_selected)$gtex.smrin))
+
+# Sample orign
+y$samples$slice <- as.factor(c(colData(rse_brain_selected)$gtex.smtsd,colData(rse_liver_selected)$gtex.smtsd,colData(rse_lung_selected)$gtex.smtsd))
+y_filtered$samples$slice <- as.factor(c(colData(rse_brain_filtered_selected)$gtex.smtsd,colData(rse_liver_filtered_selected)$gtex.smtsd,colData(rse_lung_filtered_selected)$gtex.smtsd))
+
+#Sex of the patient
+y$samples$sex <- as.factor(c(colData(rse_brain_selected)$gtex.sex,colData(rse_liver_selected)$gtex.sex,colData(rse_lung_selected)$gtex.sex))
+y_filtered$samples$sex <- as.factor(c(colData(rse_brain_filtered_selected)$gtex.sex,colData(rse_liver_filtered_selected)$gtex.sex,colData(rse_lung_filtered_selected)$gtex.sex))
+
+#Age of the patient 
+y$samples$age <- as.factor(c(colData(rse_brain_selected)$gtex.age,colData(rse_liver_selected)$gtex.age,colData(rse_lung_selected)$gtex.age))
+y_filtered$samples$age <- as.factor(c(colData(rse_brain_filtered_selected)$gtex.age,colData(rse_liver_filtered_selected)$gtex.age,colData(rse_lung_filtered_selected)$gtex.age))
+
+# Percentage of Ribosomal RNA 
+y$samples$rRNA <- as.factor(c(colData(rse_brain_selected)$gtex.smrrnart,colData(rse_liver_selected)$gtex.smrrnart,colData(rse_lung_selected)$gtex.smrrnart))
+y_filtered$samples$rRNA <- as.factor(c(colData(rse_brain_filtered_selected)$gtex.smrrnart,colData(rse_liver_filtered_selected)$gtex.smrrnart,colData(rse_lung_filtered_selected)$gtex.smrrnart))
+
+# Percentage of mapped region
+y$samples$mapped <- as.factor(c(colData(rse_brain_selected)$"recount_qc.star.uniquely_mapped_reads_%_both", colData(rse_liver_selected)$"recount_qc.star.uniquely_mapped_reads_%_both",colData(rse_lung_selected)$"recount_qc.star.uniquely_mapped_reads_%_both"))
+y_filtered$samples$mapped <- as.factor(c(colData(rse_brain_filtered_selected)$"recount_qc.star.uniquely_mapped_reads_%_both", colData(rse_liver_filtered_selected)$"recount_qc.star.uniquely_mapped_reads_%_both",colData(rse_lung_filtered_selected)$"recount_qc.star.uniquely_mapped_reads_%_both"))
+
+#Percentage of Mitocondrial Chromosome
+y$samples$chrm <- as.factor(c(colData(rse_brain_selected)$"recount_qc.aligned_reads%.chrm", colData(rse_liver_selected)$"recount_qc.aligned_reads%.chrm",colData(rse_lung_selected)$"recount_qc.aligned_reads%.chrm"))
+y_filtered$samples$chrm <- as.factor(c(colData(rse_brain_filtered_selected)$"recount_qc.aligned_reads%.chrm", colData(rse_liver_filtered_selected)$"recount_qc.aligned_reads%.chrm",colData(rse_lung_filtered_selected)$"recount_qc.aligned_reads%.chrm"))
+
+y
+y_filtered
+
+```
+
+We check how many genes have zero counts
+```{r}
+prop.table(table(rowSums(y$counts==0)==9))
+prop.table(table(rowSums(y_filtered$counts==0)==9)) 
+```
+And we notice that we have a high number of zero counts.
+
+It is possible to filter via a inbuilt EdgeR function that filters out genes that are not expressed in all of the three replicates. 
+```{r}
+keep.exprs <- filterByExpr(y, group=group)
+y <- y[keep.exprs,, keep.lib.sizes=FALSE]
+
+keep.exprs.filtered <- filterByExpr(y_filtered, group=group)
+y_filtered <- y_filtered[keep.exprs.filtered,, keep.lib.sizes=FALSE]
+```
+
+This operation filters out all of the zero counts, which is fine because it enables parameter estimation and normalization.
+```{r}
+table(rowSums(y$counts==0)==9)
+table(rowSums(y_filtered$counts==0)==9)
+```
+
+
+We save a table containing the logarithm of the counts per million.
+```{r}
+logcpm_before <- cpm(y, log=TRUE)
+boxplot(logcpm_before)
+
+logcpm_before_filtered <- cpm(y_filtered, log=TRUE)
+boxplot(logcpm_before_filtered)
+
+```
+
+Normalize the counts
+method="TMM" is the weighted trimmed mean of M-values (to the reference) proposed by Robinson and Oshlack (2010), where the weights are from the delta method on Binomial data. If refColumn is unspecified, the library whose upper quartile is closest to the mean upper quartile is used.
+```{r}
+
+y <- calcNormFactors(y, method = "TMM")
+y
+
+y_filtered <- calcNormFactors(y_filtered, method = "TMM")
+y_filtered
+```
+
+
+```{r}
+logcpm <- cpm(y, log=TRUE)
+ggplot(stack(as.data.frame(logcpm)), aes(x = ind, y = values)) +
+  geom_boxplot(
+      width=0.6 ,
+      # custom boxes
+      color="#347988",
+      fill="#77ea93",
+      alpha=0.2,
+      
+      # Notch?
+      notch=TRUE,
+      notchwidth = 0.2,       
+      # custom outliers
+      outlier.colour="#fb8c00",
+      outlier.fill="#fb8c00",
+      outlier.size=3 , na.rm=TRUE) +
+      labs(title= "Normalised Unfiltered",
+      y= "logCPM" ,x ="") + theme_minimal()
+
+logcpm_filtered <- cpm(y_filtered, log=TRUE)
+ggplot(stack(as.data.frame(logcpm_filtered)), aes(x = ind, y = values)) +
+  geom_boxplot(
+      width=0.6 ,
+      # custom boxes
+      color="#347988",
+      fill="#77ea93",
+      alpha=0.2,
+      
+      # Notch?
+      notch=TRUE,
+      notchwidth = 0.2,       
+      # custom outliers
+      outlier.colour="#fb8c00",
+      outlier.fill="#fb8c00",
+      outlier.size=3 , na.rm=TRUE) +
+      labs(title= "Normalised Filtered",
+      y= "logCPM" ,x ="") + theme_minimal()
+```
+
+Before normalization we have more dispersion
+```{r}
+ggplot(stack(as.data.frame(logcpm_before)), aes(x = ind, y = values)) +
+  geom_boxplot(
+      width=0.6 ,
+      # custom boxes
+      color="#347988",
+      fill="#77ea93",
+      alpha=0.2,
+      
+      # Notch?
+      notch=TRUE,
+      notchwidth = 0.2,       
+      # custom outliers
+      outlier.colour="#fb8c00",
+      outlier.fill="#fb8c00",
+      outlier.size=3 , na.rm=TRUE) +
+      labs(title= "Before Normalization Unfiltered",
+      y= "logCPM" ,x ="") + theme_minimal()
+
+ggplot(stack(as.data.frame(logcpm_before_filtered)), aes(x = ind, y = values)) +
+  geom_boxplot(
+      width=0.6 ,
+      # custom boxes
+      color="#347988",
+      fill="#77ea93",
+      alpha=0.2,
+      
+      # Notch?
+      notch=TRUE,
+      notchwidth = 0.2,       
+      # custom outliers
+      outlier.colour="#fb8c00",
+      outlier.fill="#fb8c00",
+      outlier.size=3 , na.rm=TRUE) +
+      labs(title= "Before Normalization Filtered",
+      y= "logCPM" ,x ="") + theme_minimal() 
+
+```
+
+Design the linear model
+```{r}
+design <- model.matrix(~0+group, data=y$samples)
+design
+
+design_filtered <- model.matrix(~0+group, data=y_filtered$samples)
+design_filtered
+```
+Exploratory analysis - we plot the samples labeled by group:  
+Replicates of the same condition should fall very close:
+
+EXPLORATORY QUALITY CHECK
+
+what we now have is a matrix, ca. 20k genes, and in each sample we have have 20k values representing the expression of the gene. Therefore each of our samples is a point in a 20k dimensional space. 
+Here we project from 20k dimensions into 2.
+
+The distance used in the following function is not the euclidean one, but the overall fold ratio gene by gene between two samples and is computed only on a subset of the most variable genes. 
+
+The axis selected are the ones that maximise  the variability of the data. 
+in this case we have the ones that explain respecivelt 31% and 52% of the overall variability. 
+
+The closer are two points, the more similiar the expression values of those samples are. 
+```{r}
+plotMDS(logcpm, labels=group) # not euclidean distance ->
+# plotting from 20k dimensions into 2 dims
+# the two axis selected are the one that maximize the distance between data
+
+
+# the closer are two points, the more similar are the expr level of the two samples
+
+# we have to see that replicates of the same condition cluster well together
+par(mar = c(5, 5, 2, 2 ))
+
+cols = c(rep("#2E6D82",3),rep("#429699",3),rep("#5BC6A0",3))
+
+plotMDS(logcpm, labels=group, col= cols)
+plotMDS(logcpm_filtered, labels=group, col= cols)
+
+
+# Percentage of Mitochondrial RNA 
+plotMDS(logcpm, labels=y$samples$chrm, col= cols) 
+plotMDS(logcpm_filtered, labels=y$samples$chrm, col= cols) 
+
+
+# Fraction of ribosomal RNA
+plotMDS(logcpm, labels=y$samples$rRNA, col= cols) 
+plotMDS(logcpm_filtered, labels=y$samples$rRNA, col= cols) 
+
+# Biological sex of the patient 
+plotMDS(logcpm, labels=y$samples$sex, col= cols) 
+plotMDS(logcpm_filtered, labels=y$samples$sex, col= cols) 
+
+# Age of the patient
+plotMDS(logcpm, labels=y$samples$age, col= cols) 
+plotMDS(logcpm_filtered, labels=y$samples$age, col= cols) 
+
+```
+We can notice how different samples from liver and lung don't cluster as good as the brain ones. This seems to depend of the sex of the patients features tested.
+
+
+## Dispersion Estimation
+
+Genome browser
+https://genome.ucsc.edu/cgi-bin/hgc?hgsid=1370428281_hVukaf0kX84KRmOSrkqAPHelYRUA&db=hg38&c=chr1&l=173903799&r=173917327&o=173903808&t=173917378&g=gtexGene&i=SERPINC1
+
+With the following we plot the relationship between the average expression and the variability. The underlined statistical model is the negative binomial distribution and the variance of that model depends on dispertion, the biological coefficient of variation (BCV) is defined as square root of the dispersion. The bigger the (BCV), the higher is the variability and variance of the corresponding gene.
+
+The red line represents the Common, an estimation of dispertion. 
+Since variance and variability are gene specific, so each dot is the observed varibility gene by gene.
+
+The blue line, the Trend,is a function that that  tries to model the relation between average and  the dispertion. 
+
+There is a dependence between mean and actual dispertion that can be estimated. 
+The trend is used to is used to correct the original estimate, since the number of samples is not sufficient samples (we have 3) to have a reliable estiamate. 
+The gene wide dispersion an be seen as a compromise between the dispersion of our dataset, the common dispersion and the trend. 
+
+```{r}
+y <- estimateDisp(y, design)
+plotBCV(y, xlab =" Average log CPM",ylab = "Biological coefficient of variation (BCV)")
+# each dot is the observed variability, gene by gene
+# trend: estimated trend, try to put in relation the mean expression and the actual dispersion -> we estimate it from the data
+
+# we don't have enough samples to compute a reliable gene-wise dispersion estimate, so:
+# shrinkage: the original value (each point) is modified by pulling it towards the estimated trend
+
+y_filtered <- estimateDisp(y_filtered, design)
+plotBCV(y_filtered, xlab =" Average log CPM",ylab = "Biological coefficient of variation")
+
+y_filtered$common.dispersion # the bigger the coefficient, the larger is the variability
+```
+
+Computation of the beta values of the linear model. 
+I can now design pairwise comparisons of expression between the tissues. 
+QLF is quasi linear F-Test 
+```{r}
+fit <- glmQLFit(y, design)
+fit_filtered <- glmQLFit(y_filtered, design_filtered)
+
+# DE genes - LIVER vs BRAIN
+qlfLivBr <- glmQLFTest(fit, contrast=c(-1,1,0)) # liver - brain
+summary(decideTests(qlfLivBr))
+topTags(qlfLivBr, n = 10, adjust.method = "BH", sort.by = "PValue")
+
+qlfLivBr_filtered <- glmQLFTest(fit_filtered, contrast=c(-1,1,0)) # liver - brain
+summary(decideTests(qlfLivBr_filtered))
+topTags(qlfLivBr_filtered, n = 10, adjust.method = "BH", sort.by = "PValue")
+
+# DE genes - LUNG vs BRAIN
+qlfLungBr <- glmQLFTest(fit, contrast=c(-1,0,1)) # lung - brain
+summary(decideTests(qlfLungBr))
+topTags(qlfLungBr, n = 10, adjust.method = "BH", sort.by = "PValue")
+
+qlfLungBr_filtered <- glmQLFTest(fit_filtered, contrast=c(-1,0,1)) # lung - brain
+summary(decideTests(qlfLungBr_filtered))
+topTags(qlfLungBr_filtered, n = 10, adjust.method = "BH", sort.by = "PValue")
+
+# DE genes - LUNG vs LIVER
+qlfLungLiv <- glmQLFTest(fit, contrast=c(0,-1,1)) # lung - liver
+summary(decideTests(qlfLungLiv))
+topTags(qlfLungLiv,  n = 10, adjust.method = "BH", sort.by = "PValue")
+
+qlfLungLiv_filtered <- glmQLFTest(fit_filtered, contrast=c(0,-1,1)) # lung - liver
+summary(decideTests(qlfLungLiv_filtered))
+topTags(qlfLungLiv_filtered,  n = 10, adjust.method = "BH", sort.by = "PValue")
+```
+
+To compute the adjusted p-valuse for multiple testings through the Benjamini–Hochberg method.
+The tables are also sorted by p-value.
+```{r}
+resultsLivBrain = topTags(qlfLivBr, n = 10000000, adjust.method = "BH", sort.by = "PValue")
+resultsLungBrain = topTags(qlfLungBr, n = 10000000, adjust.method = "BH", sort.by = "PValue")
+resultsLungLiv = topTags(qlfLungLiv, n = 10000000, adjust.method = "BH", sort.by = "PValue")
+
+
+resultsLivBrain_filtered = topTags(qlfLivBr_filtered, n = 10000000, adjust.method = "BH", sort.by = "PValue")
+resultsLungBrain_filtered = topTags(qlfLungBr_filtered, n = 10000000, adjust.method = "BH", sort.by = "PValue")
+resultsLungLiv_filtered = topTags(qlfLungLiv_filtered, n = 10000000, adjust.method = "BH", sort.by = "PValue")
+```
+
+
+It is possible so see a summary of how many genes are significally up or down regulated in each comparison.
+```{r}
+summary(decideTests(qlfLivBr, p.value = 0.05, lfc = 0)) # lcf = minimum log2-fold-change required
+summary(decideTests(qlfLivBr_filtered, p.value = 0.05, lfc = 0)) 
+
+summary(decideTests(qlfLivBr, p.value = 0.05, lfc = 1))
+summary(decideTests(qlfLivBr_filtered, p.value = 0.05, lfc = 1))
+
+
+# If I use a more conservative adjusted p-value we lower the number of significantly differntly expressed genes. 
+summary(decideTests(qlfLivBr, p.value = 0.01, lfc = 0))
+summary(decideTests(qlfLivBr_filtered, p.value = 0.01, lfc = 0))
+
+summary(decideTests(qlfLivBr, p.value = 0.01, lfc = 1))
+summary(decideTests(qlfLivBr_filtered, p.value = 0.01, lfc = 1))
+```
+What really makes the differece in the tables we've just seen is not the lfc but the p-value.
+
+**general rule**  
+- FDR : 0.05 or 0.01  
+- threshold for the log fold change -> if we use, use 1 the best one configuration is the one that makes more sense. It is double the expression. 
+
+
+We 
+```{r}
+sel_brain1 <- rownames(resultsLivBrain$table %>% filter(logFC < -1 & logCPM > 0 & FDR <  0.01))
+sel_brain2 <- rownames(resultsLungBrain$table %>% filter(logFC < -1 & logCPM > 0 & FDR < 0.01))
+topDEgenesBrain <- intersect(sel_brain1,sel_brain2)
+
+table(startsWith(topDEgenesBrain, "RPL"))
+
+maskBrain <- startsWith(topDEgenesBrain, "LOC") | startsWith(topDEgenesBrain,"MIR") | startsWith(topDEgenesBrain, "LINC") | startsWith(topDEgenesBrain, "SNORD")
+
+topDEgenesBrain <- topDEgenesBrain[!maskBrain]
+
+###################
+sel_brain1_filtered <- rownames(resultsLivBrain_filtered$table %>% filter(logFC < -1 & logCPM > 0 & FDR <  0.01))
+sel_brain2_filtered <- rownames(resultsLungBrain_filtered$table %>% filter(logFC < -1 & logCPM > 0 & FDR < 0.01))
+topDEgenesBrain_filtered <- intersect(sel_brain1_filtered,sel_brain2_filtered)
+
+table(startsWith(topDEgenesBrain_filtered, "RPL"))
+
+maskBrain_filtered <- startsWith(topDEgenesBrain_filtered, "LOC") | startsWith(topDEgenesBrain_filtered,"MIR") | startsWith(topDEgenesBrain_filtered, "LINC") | startsWith(topDEgenesBrain_filtered, "SNORD")
+
+topDEgenesBrain_filtered <- topDEgenesBrain_filtered[!maskBrain_filtered]
+```
+
+LIVER
+```{r}
+sel_liver1 <- rownames(resultsLivBrain$table %>% filter(logFC > 1 & logCPM > 0 & FDR <  0.01))
+sel_liver2 <- rownames(resultsLungLiv$table %>% filter(logFC < -1 & logCPM > 0 & FDR < 0.01))
+topDEgenesLiver <- intersect(sel_liver1,sel_liver2)
+
+table(startsWith(topDEgenesLiver, "RPL"))
+
+maskLiver <- startsWith(topDEgenesLiver, "LOC") | startsWith(topDEgenesLiver,"MIR") | startsWith(topDEgenesLiver, "LINC") | startsWith(topDEgenesLiver, "SNORD")
+
+topDEgenesLiver <- topDEgenesLiver[!maskLiver]
+
+#######
+
+sel_liver1_filtered <- rownames(resultsLivBrain_filtered$table %>% filter(logFC > 1 & logCPM > 0 & FDR <  0.01))
+sel_liver2_filtered <- rownames(resultsLungLiv_filtered$table %>% filter(logFC < -1 & logCPM > 0 & FDR < 0.01))
+topDEgenesLiver_filtered <- intersect(sel_liver1_filtered,sel_liver2_filtered)
+
+table(startsWith(topDEgenesLiver_filtered, "RPL"))
+
+maskLiver_filtered <- startsWith(topDEgenesLiver_filtered, "LOC") | startsWith(topDEgenesLiver_filtered,"MIR") | startsWith(topDEgenesLiver_filtered, "LINC") | startsWith(topDEgenesLiver_filtered, "SNORD")
+
+topDEgenesLiver_filtered <- topDEgenesLiver_filtered[!maskLiver_filtered]
+```
+
+LUNG
+```{r}
+sel_lung1 <- rownames(resultsLungBrain$table %>% filter(logFC > 1 & logCPM > 0 & FDR <  0.01))
+sel_lung2 <- rownames(resultsLungLiv$table %>% filter(logFC > 1 & logCPM > 0 & FDR < 0.01))
+topDEgenesLung <- intersect(sel_lung1,sel_lung2)
+
+table(startsWith(topDEgenesLung, "RPL"))
+
+maskLung <- startsWith(topDEgenesLung, "LOC") | startsWith(topDEgenesLung,"MIR") | startsWith(topDEgenesLung, "LINC") | startsWith(topDEgenesLung, "SNORD")
+table(maskLung)
+
+topDEgenesLung <- topDEgenesLung[!maskLung]
+
+#####################
+
+sel_lung1_filtered <- rownames(resultsLungBrain_filtered$table %>% filter(logFC > 1 & logCPM > 0 & FDR <  0.01))
+sel_lung2_filtered <- rownames(resultsLungLiv_filtered$table %>% filter(logFC > 1 & logCPM > 0 & FDR < 0.01))
+topDEgenesLung_filtered <- intersect(sel_lung1_filtered,sel_lung2_filtered)
+
+table(startsWith(topDEgenesLung_filtered, "RPL"))
+
+maskLung_filtered <- startsWith(topDEgenesLung_filtered, "LOC") | startsWith(topDEgenesLung_filtered,"MIR") | startsWith(topDEgenesLung_filtered, "LINC") | startsWith(topDEgenesLung_filtered, "SNORD")
+table(maskLung_filtered)
+
+topDEgenesLung_filtered <- topDEgenesLung_filtered[!maskLung_filtered]
+```
+
+```{r}
+write(topDEgenesBrain, file = "topDEgenesBRAIN.txt")
+write(topDEgenesLiver, file = "topDEgenesLIVER.txt")
+write(topDEgenesLung, file = "topDEgenesLUNG.txt")
+
+write(topDEgenesBrain_filtered, file = "topDEgenesBRAIN_FILTERED.txt")
+write(topDEgenesLiver_filtered, file = "topDEgenesLIVER_FILTERED.txt")
+write(topDEgenesLung_filtered, file = "topDEgenesLUNG_FILTERED.txt")
+```
