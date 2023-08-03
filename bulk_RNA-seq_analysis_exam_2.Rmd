@@ -52,7 +52,6 @@ rse_lung <- recount3::create_rse_manual(
 
 ```
 
-#justgoblinthings 
 ```{r}
 rse_brain_filtered <- rse_brain[
 # Ribosomal RNA
